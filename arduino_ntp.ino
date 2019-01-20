@@ -1,5 +1,5 @@
 
-#define TEST
+//#define TEST
 
 #include <ESP8266WiFi.h>
 #include <WifiUdp.h>
@@ -10,7 +10,7 @@ byte mac[] = { 0xAC, 0xDE, 0x48, 0x23, 0x45, 0x67 };
 unsigned long last_update_time = 0;
 unsigned long base_time = 0;
 
-constexpr unsigned int local_port = 4096;
+constexpr unsigned int local_port = 123; // IANA-allocated NTP port.
 
 constexpr char server_url[] = "time.windows.com";
 
@@ -32,7 +32,7 @@ void setup() {
   Serial.write("Connecting to WiFi network: ");
   Serial.write(network_name);
   Serial.println();
-  WiFi.begin(network_name);
+  WiFi.begin(network_name, network_key);
   Serial.write("Connected!\r\n");
   udp.begin(local_port);
 #endif
@@ -153,10 +153,17 @@ void loop() {
   Serial.write("Done with tests. Sleeping for 30s.\r\n");
   delay(30000);
 #else // ifdef TEST
-  auto current_time = millis();
-  if (should_update_time(current_time)) {
+  Serial.write("Normal operation.\r\n");
+  auto current_offset = millis();
+  if (base_time) {
+    Serial.write("Current time is: ");
+    print_time(current_time(current_offset));
+    Serial.println();
+  }
+
+  if (should_update_time(current_offset)) {
     Serial.write("Requesting a time update from NTP.\r\n");
-    send_ntp_request(server_url);
+    send_ntp_request();
     
     // Wait a second for a response from the server.
     delay(1000);
@@ -164,19 +171,26 @@ void loop() {
       // We've received a packet, let's pull our data from it.
       udp.read(packet_buffer, ntp_packet_size);
 
-      Serial.write("Received an NTP update.");
+      Serial.write("Received an NTP update.\r\n");
       // We really care about the timestamp at byte 40. It's 4 bytes long.
-      unsigned long timestamp = 
-        word(packet_buffer[40], packet_buffer[41]) << 16 |
-        word(packet_buffer[42], packet_buffer[43]);
+      unsigned long timestamp = (((unsigned long)packet_buffer[40]) << 24)
+        + (((unsigned long)packet_buffer[41]) << 16)
+        + (((unsigned long)packet_buffer[42]) << 8)
+        + packet_buffer[43];
+
+      Serial.write("Received timestamp: ");
+      Serial.println(timestamp);
       
       if (timestamp < base_time) {
-        Serial.write("Clock skew encountered!");
+        Serial.write("Clock skew encountered!\r\n");
       }
 
       base_time = timestamp;
       last_update_time = millis();
 
+      Serial.write("Updated time at: ");
+      print_time(current_time(last_update_time));
+      Serial.println();
     }
   }
 
@@ -186,18 +200,48 @@ void loop() {
 #endif
 }
 
-void send_ntp_request(char const *time_server) {
+void send_ntp_request() {
   memset(packet_buffer, 0, ntp_packet_size);
 
-  packet_buffer[0] = 0b01110000; // LI: 0b00, VN: 0b100, Mode: 0b011
-  packet_buffer[1] = 0; // Stratum
-  packet_buffer[2] = 6; // Polling interval
-  packet_buffer[3] = 0xEC; // Peer clock precision
-  // 8 empty bytes for root delay & dispersion
-  packet_buffer[12] = 49;
-  packet_buffer[13] = 0x4E;
-  packet_buffer[14] = 19;
-  packet_buffer[15] = 52;
+  packet_buffer[0] = 0b00100011; // LI: 0b00, VN: 0b100, Mode: 0b011
 
+  // Open a port to the time server on the NTP port.
+  if (udp.beginPacket(server_url, 123)) {
+    Serial.write("Began message to time server ");
+    Serial.write(server_url);
+    Serial.println();
 
+    udp.write(packet_buffer, sizeof(packet_buffer));
+    udp.endPacket();
+  } else {
+    Serial.write("Error starting message!\r\n"); // Has a hard time with this idea at first.
+  }
+}
+
+void print_time(unsigned long timestamp) {
+  // Do I care about the date? We can care about the date anther time.
+  auto time_of_day = timestamp % hours(24);
+  auto hour = time_of_day / hours(1);
+  // First get just the remainder when divided by hours, then divide by 60
+  // to get rid of seconds.
+  // Next 
+  auto minute = (time_of_day % hours(1)) / 60;
+  auto second = time_of_day % 60;
+
+  if (hour < 10) {
+    Serial.print(0);
+  }
+  Serial.print(hour);
+  Serial.print(":");
+
+  if (minute < 10) {
+    Serial.print(0);
+  }
+  Serial.print(minute);
+  Serial.print(":");
+
+  if (second < 10) {
+    Serial.print(0);
+  }
+  Serial.print(second);
 }
