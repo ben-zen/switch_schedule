@@ -72,6 +72,10 @@ enum class switch_state : bool {
   on
 };
 
+constexpr int switch_state_to_pin_level(switch_state state) {
+  return (state == switch_state::on) ? HIGH : LOW;
+}
+
 struct calendar_event {
   calendar_time time;
   switch_state state;
@@ -90,7 +94,6 @@ calendar_event calendar[] = {
   { { 4, 18, 0, 0 }, switch_state::off } };
 calendar_event *last_event = nullptr;
 
-bool manual_switch_set = false;
 switch_state switch_value = switch_state::off;
 
 void setup() {
@@ -105,6 +108,16 @@ void setup() {
   WiFi.begin(network_name, network_key);
   Serial.write("Connected!\r\n");
   udp.begin(local_port);
+
+  // Set up lines to listen on and write to.
+  pinMode(12, OUTPUT); // GPIO12 goes to the relay in a Sonoff switch.
+  pinMode(13, OUTPUT); // GPIO13 is the case LED. Can be used for whatever.
+  pinMode(14, INPUT); // GPIO14 is routed to an empty pin broken out on the
+                      // PCB.
+
+  pinMode(0, INPUT_PULLUP); // GPIO0 is the button on a Sonoff switch
+  // When the button's pushed, toggle the state.
+  attachInterrupt(digitalPinToInterrupt(0), handle_button_press, FALLING);
 #endif
 }
 
@@ -174,7 +187,7 @@ calendar_time wall_time_to_calendar_time(unsigned long long wall_time) {
   return time;
 }
 
-calendar_event *get_last_event(unsigned long long current_time) {
+struct calendar_event *get_last_event(unsigned long long current_time) {
   calendar_event *last_event = nullptr;
   auto current_cal_time = wall_time_to_calendar_time(current_time);
   for (auto event = std::begin(calendar); event != std::end(calendar); event++) {
@@ -209,6 +222,11 @@ bool should_update_time(unsigned long long current_time) {
   }
 
   return false;
+}
+
+void handle_button_press() {
+  auto current_state = digitalRead(12);
+  digitalWrite(12, (current_state == HIGH) ? LOW : HIGH);
 }
 
 void loop() {
@@ -331,8 +349,8 @@ void loop() {
 
   if (current_event != prev_event) {
     last_event = current_event;
-    manual_switch_set = false;
     switch_value = current_event->state;
+    digitalWrite(12, switch_state_to_pin_level(switch_value));
   }
 
   delay(30000); // Wait 10 seconds before retrying anything.
